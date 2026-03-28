@@ -49,7 +49,7 @@ export const login = async (req: Request, res: Response) => {
   try {
     const validatedData = loginSchema.parse(req.body);
 
-    const user = await User.findOne({ email: validatedData.email });
+    const user = await User.findOne({ email: validatedData.email }).lean();
     if (!user) {
       return sendError(res, 401, 'Invalid credentials');
     }
@@ -76,7 +76,7 @@ export const login = async (req: Request, res: Response) => {
 export const getCurrentUser = async (req: Request, res: Response) => {
   try {
     // req.user is set by the authenticate middleware
-    const user = await User.findById(req.user.id).select('-password');
+    const user = await User.findById(req.user.id).select('-password').lean();
     if (!user) {
       return sendError(res, 404, 'User not found');
     }
