@@ -13,7 +13,7 @@ app.get('/health', (req: Request, res: Response) => {
   res.status(200).json({ status: 'OK', message: 'Server is running' });
 });
 
-// Routes will be imported and used here
-// app.use('/api', routes);
+import routes from './routes';
+app.use('/api', routes);
 
 export default app;
