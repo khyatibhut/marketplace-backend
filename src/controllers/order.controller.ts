@@ -7,12 +7,16 @@ import { getPagination } from '../utils/common';
 import { createOrderSchema, updateOrderStatusSchema } from '../utils/validators';
 import { getCache, setCache, deleteCache, deleteCacheByPattern } from '../utils/cache';
 import { getIO } from '../sockets';
+import { isRedisConnected } from '../config/redis';
+import { addOrderLifecycleJob, removeOrderJob } from '../queues/order.queue';
+import { addStockRestoreJob } from '../queues/stock.queue';
 
 // Statuses a buyer can still cancel from
 const CANCELLABLE_STATUSES: OrderStatus[] = [OrderStatus.PLACED, OrderStatus.CONFIRMED];
 
 // Valid seller-allowed status transitions (forward only, no skipping to delivered/cancelled)
 const SELLER_ALLOWED_TRANSITIONS: Record<string, OrderStatus[]> = {
+  [OrderStatus.PLACED]: [OrderStatus.CONFIRMED],
   [OrderStatus.CONFIRMED]: [OrderStatus.PREPARING],
   [OrderStatus.PREPARING]: [OrderStatus.OUT_FOR_DELIVERY],
   [OrderStatus.OUT_FOR_DELIVERY]: [OrderStatus.DELIVERED],
@@ -74,11 +78,21 @@ export const createOrder = async (req: Request, res: Response) => {
       stockUpdates.push({ id: product._id as mongoose.Types.ObjectId, delta: -item.quantity });
     }
 
-    // Atomically reduce stock for all products
+    // Atomically reduce stock for all products ensuring stock doesn't go below 0
+    const stockPromises = stockUpdates.map(async ({ id, delta }) => {
+      const updated = await Product.findOneAndUpdate(
+        { _id: id, stock: { $gte: Math.abs(delta) } },
+        { $inc: { stock: delta } },
+        { session }
+      );
+      if (!updated) {
+        throw new Error('Stock unavailable or insufficient (preventing overselling)');
+      }
+      return updated;
+    });
+
     await Promise.all([
-      ...stockUpdates.map(({ id, delta }) =>
-        Product.findByIdAndUpdate(id, { $inc: { stock: delta } }, { session })
-      ),
+      ...stockPromises,
       // Bust stock caches
       deleteCache(...stockUpdates.map(({ id }) => `stock:${id}`))
     ]);
@@ -99,6 +113,14 @@ export const createOrder = async (req: Request, res: Response) => {
     );
 
     await session.commitTransaction();
+
+    // Schedule initial queue transition logic (if Redis is available)
+    if (isRedisConnected) {
+      const AUTO_DELAY_MS = 2 * 60 * 1000;
+      const jobId = await addOrderLifecycleJob(order._id.toString(), OrderStatus.CONFIRMED, AUTO_DELAY_MS);
+      if (jobId) await Order.findByIdAndUpdate(order._id, { currentJobId: jobId });
+    }
+
     await invalidateOrderCaches(undefined, req.user.id);
 
     // Broadcast new order to user and responsible sellers
@@ -198,19 +220,21 @@ export const cancelOrder = async (req: Request, res: Response) => {
       return sendError(res, 409, `Cannot cancel order in "${order.status}" status`);
     }
 
-    // Restore stock and bust stock caches
-    await Promise.all([
-      ...order.items.map((item) =>
-        Product.findByIdAndUpdate(item.productId, { $inc: { stock: item.quantity } }, { session })
-      ),
-      deleteCache(...order.items.map((item) => `stock:${item.productId}`))
-    ]);
+    if (order.currentJobId && isRedisConnected) {
+      await removeOrderJob(order.currentJobId);
+      order.currentJobId = undefined;
+    }
 
     order.status = OrderStatus.CANCELLED;
     order.statusHistory.push({ status: OrderStatus.CANCELLED, timestamp: new Date(), comment: 'Cancelled by buyer' });
     await order.save({ session });
 
     await session.commitTransaction();
+    
+    // Restore stock asynchronously via queue (if Redis is available)
+    if (isRedisConnected) {
+      await addStockRestoreJob(order._id.toString(), order.items.map(i => ({ productId: i.productId.toString(), quantity: i.quantity })));
+    }
     await invalidateOrderCaches(req.params.id, order.buyerId.toString());
 
     // Broadcast cancelled status
@@ -288,6 +312,12 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
 
     order.status = status as OrderStatus;
     order.statusHistory.push({ status: status as OrderStatus, timestamp: new Date(), comment });
+    
+    if (order.currentJobId && isRedisConnected) {
+      await removeOrderJob(order.currentJobId);
+      order.currentJobId = undefined;
+    }
+    
     await order.save();
 
     await invalidateOrderCaches(req.params.id, order.buyerId.toString());
@@ -342,8 +372,35 @@ export const adminUpdateOrderStatus = async (req: Request, res: Response) => {
     const order = await Order.findById(req.params.id);
     if (!order) return sendError(res, 404, 'Order not found');
 
+    const statusOrder: Record<string, number> = {
+      [OrderStatus.PLACED]: 0,
+      [OrderStatus.CONFIRMED]: 1,
+      [OrderStatus.PREPARING]: 2,
+      [OrderStatus.OUT_FOR_DELIVERY]: 3,
+      [OrderStatus.DELIVERED]: 4,
+    };
+
+    if (
+      status !== OrderStatus.CANCELLED &&
+      order.status !== OrderStatus.CANCELLED &&
+      statusOrder[status] < statusOrder[order.status]
+    ) {
+      return sendError(res, 409, `Admin override cannot move status backward from "${order.status}" to "${status}"`);
+    }
+
+    // If cancelling, restore stock asynchronously (if Redis is available)
+    if (status === OrderStatus.CANCELLED && order.status !== OrderStatus.CANCELLED && isRedisConnected) {
+      await addStockRestoreJob(order._id.toString(), order.items.map(i => ({ productId: i.productId.toString(), quantity: i.quantity })));
+    }
+
     order.status = status as OrderStatus;
     order.statusHistory.push({ status: status as OrderStatus, timestamp: new Date(), comment: comment ?? 'Admin override' });
+    
+    if (order.currentJobId && isRedisConnected) {
+      await removeOrderJob(order.currentJobId);
+      order.currentJobId = undefined;
+    }
+
     await order.save();
 
     await invalidateOrderCaches(req.params.id, order.buyerId.toString());
