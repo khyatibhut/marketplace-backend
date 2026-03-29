@@ -6,6 +6,7 @@ import { Product } from '../models/Product';
 import { getPagination } from '../utils/common';
 import { createOrderSchema, updateOrderStatusSchema } from '../utils/validators';
 import { getCache, setCache, deleteCache, deleteCacheByPattern } from '../utils/cache';
+import { getIO } from '../sockets';
 
 // Statuses a buyer can still cancel from
 const CANCELLABLE_STATUSES: OrderStatus[] = [OrderStatus.PLACED, OrderStatus.CONFIRMED];
@@ -99,6 +100,14 @@ export const createOrder = async (req: Request, res: Response) => {
 
     await session.commitTransaction();
     await invalidateOrderCaches(undefined, req.user.id);
+
+    // Broadcast new order to user and responsible sellers
+    const io = getIO();
+    io.to(`user:${req.user.id}`).emit('order:new', { order });
+    order.sellerIds.forEach((sellerId: any) => {
+      io.to(`seller:${sellerId}`).emit('seller:new_order', { order });
+    });
+
     sendSuccess(res, 201, 'Order placed successfully', { order });
   } catch (error: any) {
     await session.abortTransaction();
@@ -203,6 +212,15 @@ export const cancelOrder = async (req: Request, res: Response) => {
 
     await session.commitTransaction();
     await invalidateOrderCaches(req.params.id, order.buyerId.toString());
+
+    // Broadcast cancelled status
+    const io = getIO();
+    io.to(`user:${order.buyerId}`).emit('order:cancelled', { orderId: order._id });
+    order.sellerIds.forEach((sellerId: any) => {
+      io.to(`seller:${sellerId}`).emit('seller:order_update', { orderId: order._id, status: order.status });
+    });
+    io.to('admin').emit('admin:order_update', { orderId: order._id, status: order.status, by: 'buyer' });
+
     sendSuccess(res, 200, 'Order cancelled successfully', { order });
   } catch (error: any) {
     await session.abortTransaction();
@@ -273,6 +291,12 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
     await order.save();
 
     await invalidateOrderCaches(req.params.id, order.buyerId.toString());
+
+    // Broadcast status update
+    const io = getIO();
+    io.to(`user:${order.buyerId}`).emit('order:status_update', { orderId: order._id, status: order.status });
+    io.to('admin').emit('admin:order_update', { orderId: order._id, status: order.status, sellerId: req.user.id });
+
     sendSuccess(res, 200, 'Order status updated successfully', { order });
   } catch (error: any) {
     if (error.name === 'ZodError') return sendError(res, 400, 'Validation error', error.errors);
@@ -323,6 +347,14 @@ export const adminUpdateOrderStatus = async (req: Request, res: Response) => {
     await order.save();
 
     await invalidateOrderCaches(req.params.id, order.buyerId.toString());
+
+    // Broadcast status update
+    const io = getIO();
+    io.to(`user:${order.buyerId}`).emit('order:status_update', { orderId: order._id, status: order.status });
+    order.sellerIds.forEach((sellerId: any) => {
+      io.to(`seller:${sellerId}`).emit('seller:order_update', { orderId: order._id, status: order.status });
+    });
+
     sendSuccess(res, 200, 'Order status force-updated successfully', { order });
   } catch (error: any) {
     if (error.name === 'ZodError') return sendError(res, 400, 'Validation error', error.errors);
