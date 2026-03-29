@@ -4,8 +4,8 @@
   "description": "Order Processing & Live Status System",
   "main": "dist/server.js",
   "scripts": {
-    "start": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "dev": "nodemon src/server.ts",
+    "start": "ts-node-dev --respawn --transpile-only dist/src/server.ts",
+    "dev": "nodemon dist/src/server.ts",
     "build": "tsc",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write \"src/**/*.ts\""
