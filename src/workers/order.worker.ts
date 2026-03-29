@@ -4,6 +4,7 @@ import { Order, OrderStatus } from "../models/Order";
 import { addOrderLifecycleJob } from "../queues/order.queue";
 import { getIO } from "../sockets";
 import { getCache, deleteCache, deleteCacheByPattern } from "../utils/cache";
+import { triggerWebhooks } from "../services/webhook.service";
 
 const NEXT_STATUS_MAP: Record<OrderStatus, OrderStatus | null> = {
   [OrderStatus.PLACED]: OrderStatus.CONFIRMED,
@@ -102,8 +103,15 @@ export const initOrderWorker = () => {
         status: statusStr,
       });
 
+      // Trigger Webhooks for Buyer and Sellers
+      await triggerWebhooks(
+        [order.buyerId.toString(), ...order.sellerIds.map((s) => s.toString())],
+        "order.status_updated",
+        { orderId: order._id, status: statusStr }
+      );
+
       console.log(
-        `[Order Worker] Successfully transitioned order ${orderId} to ${nextStatus}`,
+        `[Order Worker] Successfully transitioned order ${orderId} to ${nextStatus}`
       );
     },
     { connection: redisQueueConnection },

@@ -18,6 +18,7 @@ import { getIO } from "../sockets";
 import { isRedisConnected } from "../config/redis";
 import { addOrderLifecycleJob, removeOrderJob } from "../queues/order.queue";
 import { addStockRestoreJob } from "../queues/stock.queue";
+import { triggerWebhooks } from "../services/webhook.service";
 
 // Statuses a buyer can still cancel from
 const CANCELLABLE_STATUSES: OrderStatus[] = [
@@ -166,6 +167,13 @@ export const createOrder = async (req: Request, res: Response) => {
     order.sellerIds.forEach((sellerId: any) => {
       io.to(`seller:${sellerId}`).emit("seller:new_order", { order });
     });
+
+    // Trigger Webhooks
+    await triggerWebhooks(
+      order.sellerIds.map((s) => s.toString()),
+      "order.new",
+      { order }
+    );
 
     sendSuccess(res, 201, "Order placed successfully", { order });
   } catch (error: any) {
@@ -351,6 +359,13 @@ export const cancelOrder = async (req: Request, res: Response) => {
       by: "buyer",
     });
 
+    // Trigger Webhooks
+    await triggerWebhooks(
+      [order.buyerId.toString(), ...order.sellerIds.map((s) => s.toString())],
+      "order.cancelled",
+      { orderId: order._id }
+    );
+
     sendSuccess(res, 200, "Order cancelled successfully", { order });
   } catch (error: any) {
     await session.abortTransaction();
@@ -453,6 +468,13 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
       status: order.status,
       sellerId: req.user.id,
     });
+
+    // Trigger Webhooks
+    await triggerWebhooks(
+      [order.buyerId.toString(), ...order.sellerIds.map((s) => s.toString())],
+      "order.status_updated",
+      { orderId: order._id, status: order.status }
+    );
 
     sendSuccess(res, 200, "Order status updated successfully", { order });
   } catch (error: any) {
@@ -573,6 +595,13 @@ export const adminUpdateOrderStatus = async (req: Request, res: Response) => {
         status: order.status,
       });
     });
+
+    // Trigger Webhooks
+    await triggerWebhooks(
+      [order.buyerId.toString(), ...order.sellerIds.map((s) => s.toString())],
+      "order.status_updated",
+      { orderId: order._id, status: order.status }
+    );
 
     sendSuccess(res, 200, "Order status force-updated successfully", { order });
   } catch (error: any) {
@@ -750,6 +779,13 @@ export const bulkUpdateOrderStatus = async (req: Request, res: Response) => {
           order.sellerIds.forEach((sellerId: any) => {
             io.to(`seller:${sellerId}`).emit("seller:order_update", { orderId: order._id, status });
           });
+
+          // Trigger Webhooks
+          await triggerWebhooks(
+            [order.buyerId.toString(), ...order.sellerIds.map((s) => s.toString())],
+            "order.status_updated",
+            { orderId: order._id, status }
+          );
 
           results.push({ orderId, success: true });
         } catch (err: any) {
