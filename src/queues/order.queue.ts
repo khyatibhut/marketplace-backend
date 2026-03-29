@@ -1,30 +1,34 @@
-import { Queue } from 'bullmq';
-import { redisQueueConnection } from '../config/queue';
-import { OrderStatus } from '../models/Order';
+import { Queue } from "bullmq";
+import { redisQueueConnection } from "../config/queue";
+import { OrderStatus } from "../models/Order";
 
-import { isRedisConnected } from '../config/redis';
+import { isRedisConnected } from "../config/redis";
 
 let orderLifecycleQueue: Queue;
 
 export const getOrderLifecycleQueue = () => {
   if (!isRedisConnected) return null;
   if (!orderLifecycleQueue) {
-    orderLifecycleQueue = new Queue('order-lifecycle', {
+    orderLifecycleQueue = new Queue("order-lifecycle", {
       connection: redisQueueConnection,
-      defaultJobOptions: { removeOnComplete: true, removeOnFail: false }
+      defaultJobOptions: { removeOnComplete: true, removeOnFail: false },
     });
   }
   return orderLifecycleQueue;
 };
 
-export const addOrderLifecycleJob = async (orderId: string, nextStatus: OrderStatus, delayMs: number) => {
+export const addOrderLifecycleJob = async (
+  orderId: string,
+  nextStatus: OrderStatus,
+  delayMs: number,
+) => {
   const queue = getOrderLifecycleQueue();
   if (!queue) return null;
 
   const job = await queue.add(
-    'transition-status',
+    "transition-status",
     { orderId, nextStatus },
-    { delay: delayMs }
+    { delay: delayMs },
   );
   return job.id;
 };

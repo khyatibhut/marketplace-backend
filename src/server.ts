@@ -1,11 +1,11 @@
-import 'dotenv/config';
-import http from 'http';
-import app from './app';
-import { initSockets } from './sockets';
-import { connectDB } from './config/database';
-import { connectRedis } from './config/redis';
-import { initOrderWorker } from './workers/order.worker';
-import { initStockWorker } from './workers/stock.worker';
+import "dotenv/config";
+import http from "http";
+import app from "./app";
+import { initSockets } from "./sockets";
+import { connectDB } from "./config/database";
+import { connectRedis } from "./config/redis";
+import { initOrderWorker } from "./workers/order.worker";
+import { initStockWorker } from "./workers/stock.worker";
 
 const PORT = process.env.PORT || 3000;
 const server = http.createServer(app);
@@ -29,7 +29,7 @@ const startServer = async () => {
       console.log(`Server is running on port ${PORT}`);
     });
   } catch (error) {
-    console.error('Failed to start server:', error);
+    console.error("Failed to start server:", error);
     process.exit(1);
   }
 };

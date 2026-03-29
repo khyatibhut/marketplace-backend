@@ -1,9 +1,9 @@
-import mongoose, { Document, Schema } from 'mongoose';
+import mongoose, { Document, Schema } from "mongoose";
 
 export enum UserRole {
-  BUYER = 'BUYER',
-  SELLER = 'SELLER',
-  ADMIN = 'ADMIN'
+  BUYER = "BUYER",
+  SELLER = "SELLER",
+  ADMIN = "ADMIN",
 }
 
 export interface IUser extends Document {
@@ -24,16 +24,16 @@ const userSchema = new Schema<IUser>(
       unique: true,
       trim: true,
       lowercase: true,
-      index: true
+      index: true,
     },
     password: { type: String, required: true },
     role: {
       type: String,
       enum: Object.values(UserRole),
-      default: UserRole.BUYER
-    }
+      default: UserRole.BUYER,
+    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
-export const User = mongoose.model<IUser>('User', userSchema);
+export const User = mongoose.model<IUser>("User", userSchema);

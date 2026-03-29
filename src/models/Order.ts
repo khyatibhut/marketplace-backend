@@ -1,14 +1,14 @@
-import mongoose, { Document, Schema } from 'mongoose';
-import { IUser } from './User';
-import { IProduct } from './Product';
+import mongoose, { Document, Schema } from "mongoose";
+import { IUser } from "./User";
+import { IProduct } from "./Product";
 
 export enum OrderStatus {
-  PLACED = 'placed',
-  CONFIRMED = 'confirmed',
-  PREPARING = 'preparing',
-  OUT_FOR_DELIVERY = 'out_for_delivery',
-  DELIVERED = 'delivered',
-  CANCELLED = 'cancelled'
+  PLACED = "placed",
+  CONFIRMED = "confirmed",
+  PREPARING = "preparing",
+  OUT_FOR_DELIVERY = "out_for_delivery",
+  DELIVERED = "delivered",
+  CANCELLED = "cancelled",
 }
 
 export interface IOrderItem {
@@ -44,29 +44,41 @@ export interface IOrder extends Document {
 
 const orderItemSchema = new Schema<IOrderItem>(
   {
-    productId: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
-    quantity: { type: Number, required: true, min: [1, 'Quantity must be at least 1'] },
-    pricePerItem: { type: Number, required: true, min: 0 }
+    productId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+    quantity: {
+      type: Number,
+      required: true,
+      min: [1, "Quantity must be at least 1"],
+    },
+    pricePerItem: { type: Number, required: true, min: 0 },
   },
-  { _id: false } // No separate ID needed for subdocuments
+  { _id: false }, // No separate ID needed for subdocuments
 );
 
 const trackingEventSchema = new Schema<ITrackingEvent>(
   {
     status: { type: String, enum: Object.values(OrderStatus), required: true },
     timestamp: { type: Date, default: Date.now },
-    comment: { type: String }
+    comment: { type: String },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const orderSchema = new Schema<IOrder>(
   {
-    buyerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    sellerIds: [{ type: Schema.Types.ObjectId, ref: 'User', index: true }],
+    buyerId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+    sellerIds: [{ type: Schema.Types.ObjectId, ref: "User", index: true }],
     items: {
       type: [orderItemSchema],
-      validate: [(v: IOrderItem[]) => v.length > 0, 'Order must have at least one item']
+      validate: [
+        (v: IOrderItem[]) => v.length > 0,
+        "Order must have at least one item",
+      ],
     },
     totalAmount: { type: Number, required: true, min: 0 },
     shippingAddress: {
@@ -74,18 +86,18 @@ const orderSchema = new Schema<IOrder>(
       city: { type: String, required: true },
       state: { type: String, required: true },
       zip: { type: String, required: true },
-      country: { type: String, required: true }
+      country: { type: String, required: true },
     },
     status: {
       type: String,
       enum: Object.values(OrderStatus),
       default: OrderStatus.PLACED,
-      index: true
+      index: true,
     },
     currentJobId: { type: String, sparse: true }, // BullMQ Job reference
-    statusHistory: [trackingEventSchema]
+    statusHistory: [trackingEventSchema],
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
-export const Order = mongoose.model<IOrder>('Order', orderSchema);
+export const Order = mongoose.model<IOrder>("Order", orderSchema);

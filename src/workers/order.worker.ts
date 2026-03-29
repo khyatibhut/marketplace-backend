@@ -1,9 +1,9 @@
-import { Worker, Job } from 'bullmq';
-import { redisQueueConnection } from '../config/queue';
-import { Order, OrderStatus } from '../models/Order';
-import { addOrderLifecycleJob } from '../queues/order.queue';
-import { getIO } from '../sockets';
-import { getCache, deleteCache, deleteCacheByPattern } from '../utils/cache';
+import { Worker, Job } from "bullmq";
+import { redisQueueConnection } from "../config/queue";
+import { Order, OrderStatus } from "../models/Order";
+import { addOrderLifecycleJob } from "../queues/order.queue";
+import { getIO } from "../sockets";
+import { getCache, deleteCache, deleteCacheByPattern } from "../utils/cache";
 
 const NEXT_STATUS_MAP: Record<OrderStatus, OrderStatus | null> = {
   [OrderStatus.PLACED]: OrderStatus.CONFIRMED,
@@ -26,7 +26,7 @@ const DELAY_MAP: Record<OrderStatus, number> = {
 
 export const initOrderWorker = () => {
   const worker = new Worker(
-    'order-lifecycle',
+    "order-lifecycle",
     async (job: Job) => {
       const { orderId, nextStatus } = job.data;
 
@@ -38,12 +38,17 @@ export const initOrderWorker = () => {
 
       // Check if job is still the active one (prevent race conditions with manual overrides)
       if (order.currentJobId && order.currentJobId !== job.id) {
-        console.warn(`[Order Worker] Job ${job.id} is obsolete for order ${orderId}. Skipping.`);
+        console.warn(
+          `[Order Worker] Job ${job.id} is obsolete for order ${orderId}. Skipping.`,
+        );
         return;
       }
 
       // Prevent jumping if status has already progressed or cancelled
-      if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.DELIVERED) {
+      if (
+        order.status === OrderStatus.CANCELLED ||
+        order.status === OrderStatus.DELIVERED
+      ) {
         return;
       }
 
@@ -52,14 +57,18 @@ export const initOrderWorker = () => {
       order.statusHistory.push({
         status: nextStatus as OrderStatus,
         timestamp: new Date(),
-        comment: 'Auto-updated by system'
+        comment: "Auto-updated by system",
       });
 
       // Compute next automatic step
       const futureStatus = NEXT_STATUS_MAP[nextStatus as OrderStatus];
       if (futureStatus) {
         const delayMs = DELAY_MAP[nextStatus as OrderStatus];
-        const jobId = await addOrderLifecycleJob(order._id.toString(), futureStatus, delayMs);
+        const jobId = await addOrderLifecycleJob(
+          order._id.toString(),
+          futureStatus,
+          delayMs,
+        );
         order.currentJobId = jobId || undefined;
       } else {
         order.currentJobId = undefined;
@@ -68,24 +77,39 @@ export const initOrderWorker = () => {
       await order.save();
 
       // Invalidate caches
-      await deleteCache(`order:${orderId}:*`, `order:status:${orderId}`, 'orders:statistics');
+      await deleteCache(
+        `order:${orderId}:*`,
+        `order:status:${orderId}`,
+        "orders:statistics",
+      );
       await deleteCacheByPattern(`orders:buyer:${order.buyerId}:*`);
 
       // Emit real-time events based on status
       const io = getIO();
       const statusStr = order.status;
-      io.to(`user:${order.buyerId}`).emit('order:status_update', { orderId: order._id, status: statusStr });
-      order.sellerIds.forEach((sellerId: any) => {
-        io.to(`seller:${sellerId}`).emit('seller:order_update', { orderId: order._id, status: statusStr });
+      io.to(`user:${order.buyerId}`).emit("order:status_update", {
+        orderId: order._id,
+        status: statusStr,
       });
-      io.to('admin').emit('admin:order_update', { orderId: order._id, status: statusStr });
-      
-      console.log(`[Order Worker] Successfully transitioned order ${orderId} to ${nextStatus}`);
+      order.sellerIds.forEach((sellerId: any) => {
+        io.to(`seller:${sellerId}`).emit("seller:order_update", {
+          orderId: order._id,
+          status: statusStr,
+        });
+      });
+      io.to("admin").emit("admin:order_update", {
+        orderId: order._id,
+        status: statusStr,
+      });
+
+      console.log(
+        `[Order Worker] Successfully transitioned order ${orderId} to ${nextStatus}`,
+      );
     },
-    { connection: redisQueueConnection }
+    { connection: redisQueueConnection },
   );
 
-  worker.on('failed', (job, err) => {
+  worker.on("failed", (job, err) => {
     console.error(`[Order Worker] Job ${job?.id} failed:`, err);
   });
 
