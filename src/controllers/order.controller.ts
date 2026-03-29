@@ -622,21 +622,14 @@ export const getStatistics = async (req: Request, res: Response) => {
 
     const cached = await getCache(cacheKey);
     if (cached)
-      return sendSuccess(
-        res,
-        200,
-        "Statistics fetched successfully (cached)",
-        cached,
-      );
+      return sendSuccess(res, 200, "Statistics fetched successfully (cached)", cached);
 
     const [statusBreakdown, revenue, productSales] = await Promise.all([
-      // Count orders grouped by status
       Order.aggregate([
         { $group: { _id: "$status", count: { $sum: 1 } } },
         { $project: { status: "$_id", count: 1, _id: 0 } },
       ]),
 
-      // Total revenue from delivered orders
       Order.aggregate([
         { $match: { status: OrderStatus.DELIVERED } },
         {
@@ -652,22 +645,10 @@ export const getStatistics = async (req: Request, res: Response) => {
       // Top 5 best-selling products by quantity
       Order.aggregate([
         { $unwind: "$items" },
-        {
-          $group: {
-            _id: "$items.productId",
-            totalSold: { $sum: "$items.quantity" },
-          },
-        },
+        { $group: { _id: "$items.productId", totalSold: { $sum: "$items.quantity" } } },
         { $sort: { totalSold: -1 } },
         { $limit: 5 },
-        {
-          $lookup: {
-            from: "products",
-            localField: "_id",
-            foreignField: "_id",
-            as: "product",
-          },
-        },
+        { $lookup: { from: "products", localField: "_id", foreignField: "_id", as: "product" } },
         { $unwind: "$product" },
         { $project: { _id: 0, productName: "$product.name", totalSold: 1 } },
       ]),
@@ -678,9 +659,113 @@ export const getStatistics = async (req: Request, res: Response) => {
       revenue: revenue[0] ?? { totalRevenue: 0, totalOrders: 0 },
       topProducts: productSales,
     };
-    await setCache(cacheKey, payload, 60 * 10); // 10 min TTL — stats are heavy aggregations
+    await setCache(cacheKey, payload, 60 * 10); // 10 min TTL — heavy aggregation
     sendSuccess(res, 200, "Statistics fetched successfully", payload);
   } catch (error: any) {
     sendError(res, 500, "Error fetching statistics", error.message);
+  }
+};
+
+// ADMIN — Bulk update status for multiple orders in one request
+export const bulkUpdateOrderStatus = async (req: Request, res: Response) => {
+  try {
+    const { orderIds, status, comment } = req.body;
+
+    if (!Array.isArray(orderIds) || orderIds.length === 0)
+      return sendError(res, 400, "orderIds must be a non-empty array");
+
+    if (orderIds.length > 100)
+      return sendError(res, 400, "Cannot bulk update more than 100 orders at once");
+
+    const allowedStatuses = Object.values(OrderStatus);
+    if (!allowedStatuses.includes(status))
+      return sendError(res, 400, `Invalid status. Must be one of: ${allowedStatuses.join(", ")}`);
+
+    const statusOrder: Record<string, number> = {
+      [OrderStatus.PLACED]: 0,
+      [OrderStatus.CONFIRMED]: 1,
+      [OrderStatus.PREPARING]: 2,
+      [OrderStatus.OUT_FOR_DELIVERY]: 3,
+      [OrderStatus.DELIVERED]: 4,
+    };
+
+    const results: { orderId: string; success: boolean; error?: string }[] = [];
+    const io = getIO();
+
+    await Promise.all(
+      orderIds.map(async (orderId: string) => {
+        try {
+          if (!mongoose.Types.ObjectId.isValid(orderId)) {
+            results.push({ orderId, success: false, error: "Invalid order ID" });
+            return;
+          }
+
+          const order = await Order.findById(orderId);
+          if (!order) {
+            results.push({ orderId, success: false, error: "Order not found" });
+            return;
+          }
+
+          // Enforce forward-only movement for non-cancellation updates
+          if (
+            status !== OrderStatus.CANCELLED &&
+            order.status !== OrderStatus.CANCELLED &&
+            statusOrder[status] < statusOrder[order.status]
+          ) {
+            results.push({ orderId, success: false, error: `Cannot move backward from "${order.status}" to "${status}"` });
+            return;
+          }
+
+          // Stock restore on cancellation
+          if (status === OrderStatus.CANCELLED && order.status !== OrderStatus.CANCELLED) {
+            if (isRedisConnected) {
+              await addStockRestoreJob(
+                order._id.toString(),
+                order.items.map((i) => ({ productId: i.productId.toString(), quantity: i.quantity })),
+              );
+            } else {
+              await Promise.all(
+                order.items.map((i) => Product.findByIdAndUpdate(i.productId, { $inc: { stock: i.quantity } })),
+              );
+            }
+          }
+
+          // Clear pending queue job when manually overriding
+          if (order.currentJobId && isRedisConnected) {
+            await removeOrderJob(order.currentJobId);
+            order.currentJobId = undefined;
+          }
+
+          order.status = status as OrderStatus;
+          order.statusHistory.push({
+            status: status as OrderStatus,
+            timestamp: new Date(),
+            comment: comment ?? "Bulk update by admin",
+          });
+          await order.save();
+
+          await invalidateOrderCaches(orderId, order.buyerId.toString());
+
+          io.to(`user:${order.buyerId}`).emit("order:status_update", { orderId: order._id, status });
+          order.sellerIds.forEach((sellerId: any) => {
+            io.to(`seller:${sellerId}`).emit("seller:order_update", { orderId: order._id, status });
+          });
+
+          results.push({ orderId, success: true });
+        } catch (err: any) {
+          results.push({ orderId, success: false, error: err.message });
+        }
+      }),
+    );
+
+    // Bust stats cache since many orders changed
+    await deleteCacheByPattern("orders:statistics");
+
+    const succeeded = results.filter((r) => r.success).length;
+    const failed = results.filter((r) => !r.success).length;
+
+    sendSuccess(res, 200, `Bulk update complete: ${succeeded} succeeded, ${failed} failed`, { results });
+  } catch (error: any) {
+    sendError(res, 500, "Error during bulk order update", error.message);
   }
 };

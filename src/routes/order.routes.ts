@@ -14,11 +14,8 @@ const buyerGuard = authorizeRole(UserRole.BUYER);
 
 // ADMIN ROUTES
 router.get("/admin", adminGuard, orderController.getAllOrders);
-router.put(
-  "/admin/:id/status",
-  adminGuard,
-  orderController.adminUpdateOrderStatus,
-);
+router.put("/admin/:id/status", adminGuard, orderController.adminUpdateOrderStatus);
+router.put("/admin/bulk-status", adminGuard, orderController.bulkUpdateOrderStatus);
 router.post("/admin/reset", adminGuard, orderController.resetStuckOrders);
 router.get("/admin/statistics", adminGuard, orderController.getStatistics);
 
