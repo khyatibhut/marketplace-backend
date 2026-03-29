@@ -9,6 +9,7 @@ const router = Router();
 // Public Buyer/Admin endpoints
 router.get('/', productController.getProducts);
 router.get('/:id', productController.getProductById);
+router.get('/:id/stock', productController.getProductStock);
 
 const sellerGuard = [authenticate, authorizeRole(UserRole.SELLER)];
 

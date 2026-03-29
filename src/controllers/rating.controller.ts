@@ -3,17 +3,17 @@ import mongoose from 'mongoose';
 import { sendSuccess, sendError } from '../utils/response';
 import { Rating } from '../models/Rating';
 import { createRatingSchema } from '../utils/validators';
-import { getPaginationOptions, getPaginationResult } from '../utils/pagination';
+import { getPagination } from '../utils/common';
 
 export const createRating = async (req: Request, res: Response) => {
   try {
     const validatedData = createRatingSchema.parse(req.body);
 
     // Prevent duplicate ratings for the same product and order
-    const existing = await Rating.findOne({ 
-      orderId: validatedData.orderId, 
-      productId: validatedData.productId, 
-      buyerId: req.user.id 
+    const existing = await Rating.findOne({
+      orderId: validatedData.orderId,
+      productId: validatedData.productId,
+      buyerId: req.user.id
     }).lean();
 
     if (existing) {
@@ -41,10 +41,9 @@ export const getProductRatings = async (req: Request, res: Response) => {
       return sendError(res, 400, 'Invalid Product ID');
     }
 
-    const { page, limit, skip } = getPaginationOptions(req);
+    const { skip, limit, paginate } = getPagination(req);
     const objectId = new mongoose.Types.ObjectId(productId);
 
-    // Using MongoDB Aggregation to fetch both metadata (count and avg) and paginated reviewers
     const aggregationResult = await Rating.aggregate([
       { $match: { productId: objectId } },
       {
@@ -90,12 +89,9 @@ export const getProductRatings = async (req: Request, res: Response) => {
     const averageScore = Number((result.metadata[0]?.averageScore || 0).toFixed(1));
 
     sendSuccess(res, 200, 'Product ratings fetched successfully', {
-      stats: {
-        total,
-        averageScore
-      },
+      stats: { total, averageScore },
       ratings: result.ratings,
-      pagination: getPaginationResult(total, page, limit)
+      pagination: paginate(total)
     });
   } catch (error: any) {
     sendError(res, 500, 'Error fetching product ratings', error.message);

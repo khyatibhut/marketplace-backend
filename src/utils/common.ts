@@ -39,3 +39,39 @@ export const calculateDiscount = (price: number, discountPercentage: number): nu
 export const isEmptyObject = (obj: Record<string, any>): boolean => {
   return Object.keys(obj).length === 0 && obj.constructor === Object;
 };
+
+// ─── Pagination ───────────────────────────────────────────────────────────────
+
+import { Request } from 'express';
+
+const DEFAULT_LIMIT = 10;
+const MAX_LIMIT = 100;
+
+export interface PaginationMeta {
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
+export interface PaginationContext {
+  page: number;
+  limit: number;
+  skip: number;
+  paginate: (total: number) => PaginationMeta;
+}
+
+export const getPagination = (req: Request): PaginationContext => {
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(req.query.limit as string) || DEFAULT_LIMIT));
+  const skip = (page - 1) * limit;
+
+  const paginate = (total: number): PaginationMeta => {
+    const pages = limit > 0 ? Math.ceil(total / limit) : 0;
+    return { total, page, limit, pages, hasNextPage: page < pages, hasPrevPage: page > 1 };
+  };
+
+  return { page, limit, skip, paginate };
+};

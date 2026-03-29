@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { User, UserRole } from '../models/User';
 import { registerSchema, loginSchema } from '../utils/validators';
 import { sendSuccess, sendError } from '../utils/response';
+import { setCache } from '../utils/cache';
 
 const generateToken = (id: string, role: string) => {
   return jwt.sign({ id, role }, process.env.JWT_SECRET || 'super_secret', {
@@ -75,7 +76,6 @@ export const login = async (req: Request, res: Response) => {
 
 export const getCurrentUser = async (req: Request, res: Response) => {
   try {
-    // req.user is set by the authenticate middleware
     const user = await User.findById(req.user.id).select('-password').lean();
     if (!user) {
       return sendError(res, 404, 'User not found');
@@ -84,5 +84,15 @@ export const getCurrentUser = async (req: Request, res: Response) => {
     sendSuccess(res, 200, 'User profile fetched successfully', { user });
   } catch (error: any) {
     sendError(res, 500, 'Error fetching user profile', error.message);
+  }
+};
+
+export const postHeartbeat = async (req: Request, res: Response) => {
+  try {
+    // Online tracking with 5 min TTL
+    await setCache(`online:${req.user.id}`, { lat: Date.now() }, 300);
+    sendSuccess(res, 200, 'Heartbeat recorded successfully');
+  } catch (error: any) {
+    sendError(res, 500, 'Error recording heartbeat', error.message);
   }
 };

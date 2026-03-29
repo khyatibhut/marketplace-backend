@@ -2,31 +2,25 @@ import { Request, Response } from 'express';
 import { sendSuccess, sendError } from '../utils/response';
 import { Product } from '../models/Product';
 import { createProductSchema, updateProductSchema } from '../utils/validators';
-import { getPaginationOptions, getPaginationResult } from '../utils/pagination';
+import { getPagination } from '../utils/common';
 import { getCache, setCache, deleteCache, deleteCacheByPattern } from '../utils/cache';
 
-// ─── Cache key builders ──────────────────────────────────────────────────────
+// ─── Cache key builders (public reads only) ─────────────────────────────────
 const PRODUCT_KEY = (id: string) => `product:${id}`;
 const PRODUCTS_LIST_KEY = (qs: string) => `products:list:${qs}`;
-const SELLER_PRODUCTS_KEY = (sellerId: string, qs: string) => `products:seller:${sellerId}:${qs}`;
+const STOCK_KEY = (id: string) => `stock:${id}`;
 
-/**
- * Invalidates all list caches for public products and a specific seller.
- * Called on create/update/delete.
- */
-const invalidateProductCaches = async (productId?: string, sellerId?: string) => {
-  const tasks: Promise<void>[] = [
-    deleteCacheByPattern('products:list:*'),
-  ];
-  if (productId) tasks.push(deleteCache(PRODUCT_KEY(productId)));
-  if (sellerId)  tasks.push(deleteCacheByPattern(`products:seller:${sellerId}:*`));
+/** Invalidate public product caches on write */
+const invalidateProductCaches = async (productId?: string) => {
+  const tasks: Promise<void>[] = [deleteCacheByPattern('products:list:*')];
+  if (productId) tasks.push(deleteCache(PRODUCT_KEY(productId)), deleteCache(STOCK_KEY(productId)));
   await Promise.all(tasks);
 };
 
 // ─── Public: GET /products ────────────────────────────────────────────────────
 export const getProducts = async (req: Request, res: Response) => {
   try {
-    const { page, limit, skip } = getPaginationOptions(req);
+    const { skip, limit, paginate } = getPagination(req);
     const cacheKey = PRODUCTS_LIST_KEY(new URLSearchParams(req.query as any).toString());
 
     const cached = await getCache(cacheKey);
@@ -52,7 +46,7 @@ export const getProducts = async (req: Request, res: Response) => {
       Product.countDocuments(query)
     ]);
 
-    const payload = { products, pagination: getPaginationResult(total, page, limit) };
+    const payload = { products, pagination: paginate(total) };
     await setCache(cacheKey, payload);
 
     sendSuccess(res, 200, 'Products listed successfully', payload);
@@ -76,21 +70,36 @@ export const getProductById = async (req: Request, res: Response) => {
 
     if (!product) return sendError(res, 404, 'Product not found');
 
-    await setCache(cacheKey, product);
+    await setCache(cacheKey, product, 600); // 10 min TTL
     sendSuccess(res, 200, 'Product details fetched successfully', { product });
   } catch (error: any) {
     sendError(res, 500, 'Error fetching product details', error.message);
   }
 };
 
+// ─── Public: GET /products/:id/stock ──────────────────────────────────────────
+export const getProductStock = async (req: Request, res: Response) => {
+  try {
+    const cacheKey = STOCK_KEY(req.params.id);
+
+    const cached = await getCache<{ stock: number }>(cacheKey);
+    if (cached) return sendSuccess(res, 200, 'Product stock fetched successfully (cached)', cached);
+
+    const product = await Product.findById(req.params.id).select('stock').lean();
+    if (!product) return sendError(res, 404, 'Product not found');
+
+    const payload = { stock: product.stock };
+    await setCache(cacheKey, payload, 60); // 1 min TTL
+    sendSuccess(res, 200, 'Product stock fetched successfully', payload);
+  } catch (error: any) {
+    sendError(res, 500, 'Error fetching product stock', error.message);
+  }
+};
+
 // ─── Seller: GET /products/seller/me ─────────────────────────────────────────
 export const getSellerProducts = async (req: Request, res: Response) => {
   try {
-    const { page, limit, skip } = getPaginationOptions(req);
-    const cacheKey = SELLER_PRODUCTS_KEY(req.user.id, new URLSearchParams(req.query as any).toString());
-
-    const cached = await getCache(cacheKey);
-    if (cached) return sendSuccess(res, 200, 'Seller products fetched successfully (cached)', cached);
+    const { skip, limit, paginate } = getPagination(req);
 
     const [products, total] = await Promise.all([
       Product.find({ sellerId: req.user.id })
@@ -102,10 +111,10 @@ export const getSellerProducts = async (req: Request, res: Response) => {
       Product.countDocuments({ sellerId: req.user.id })
     ]);
 
-    const payload = { products, pagination: getPaginationResult(total, page, limit) };
-    await setCache(cacheKey, payload);
-
-    sendSuccess(res, 200, 'Seller products fetched successfully', payload);
+    sendSuccess(res, 200, 'Seller products fetched successfully', {
+      products,
+      pagination: paginate(total)
+    });
   } catch (error: any) {
     sendError(res, 500, 'Error fetching seller products', error.message);
   }
@@ -118,8 +127,7 @@ export const createProduct = async (req: Request, res: Response) => {
 
     const product = await Product.create({ ...validatedData, sellerId: req.user.id });
 
-    // Invalidate all public lists and seller-specific lists
-    await invalidateProductCaches(undefined, req.user.id);
+    await invalidateProductCaches();
 
     sendSuccess(res, 201, 'Product created successfully', { product });
   } catch (error: any) {
@@ -141,8 +149,8 @@ export const updateProduct = async (req: Request, res: Response) => {
 
     if (!product) return sendError(res, 404, 'Product not found or unauthorized to update');
 
-    // Bust product detail cache + list caches for this seller
-    await invalidateProductCaches(req.params.id, req.user.id);
+    // Bust product detail cache + public list caches
+    await invalidateProductCaches(req.params.id);
 
     sendSuccess(res, 200, 'Product updated successfully', { product });
   } catch (error: any) {
@@ -158,8 +166,8 @@ export const deleteProduct = async (req: Request, res: Response) => {
 
     if (!product) return sendError(res, 404, 'Product not found or unauthorized to delete');
 
-    // Bust product detail cache + list caches for this seller
-    await invalidateProductCaches(req.params.id, req.user.id);
+    // Bust product detail cache + public list caches
+    await invalidateProductCaches(req.params.id);
 
     sendSuccess(res, 200, 'Product deleted successfully');
   } catch (error: any) {
